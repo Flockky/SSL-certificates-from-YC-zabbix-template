@@ -1,0 +1,103 @@
+zabbix_export:
+  version: '7.4'
+  template_groups:
+    - uuid: af671f01cd9c4e93a804cfff6638e904
+      name: SSL
+    - uuid: af36653e02304d2e8e3900010d9d20c2
+      name: 'Наши шаблоны'
+  templates:
+    - uuid: 368af27b2eb848f38654d640cc85eda2
+      template: 'HARICA SSL certs'
+      name: 'HARICA SSL Сертификаты'
+      description: |
+        Шаблон мониторинга SSL сертификатов HARICA.
+        
+        Принцип работы:
+        1. Через External Check запускается скрипт HaricaSSL.sh.
+        2. Скрипт возвращает JSON со списком сертификатов и днями до истечения срока.
+        3. Данные обрабатываются через низкоуровневое обнаружение (LLD).
+        4. Триггеры срабатывают при остатке срока 30 и 7 дней.
+        
+        Примечание: Скрипт HaricaSSL.sh должен находиться в директории ExternalScripts на Zabbix Server/Proxy.
+      groups:
+        - name: SSL
+        - name: 'Наши шаблоны'
+      macros:
+        - macro: '{$HARICA.SCRIPT_PARAMS}'
+          value: ''
+          description: 'Дополнительные параметры для скрипта HaricaSSL.sh (если требуются)'
+      items:
+        - uuid: 23eafabb09ac46f488e4c5c62f0d1f5f
+          name: 'HARICA сертификаты get data'
+          type: EXTERNAL
+          key: 'HaricaSSL.sh[{$HARICA.SCRIPT_PARAMS}]'
+          delay: '0;5m/1-7,09:00-09:05'
+          value_type: TEXT
+          tags:
+            - tag: SSL
+              value: SSL
+          triggers:
+            - uuid: daf15c22acb54612b78e16a371981bd3
+              expression: 'last(/HARICA SSL certs/HaricaSSL.sh[{$HARICA.SCRIPT_PARAMS}]) = "no data"'
+              name: 'Не удалось получить данные по HARICA сертификатам'
+              opdata: 'Current value: {ITEM.LASTVALUE1}'
+              priority: WARNING
+              description: 'Действия ДС не требуются'
+      discovery_rules:
+        - uuid: 004ded76784147418521167cb71a3e38
+          name: 'SSL HARICA discovery'
+          type: DEPENDENT
+          key: SSL_HARICA_discovery
+          item_prototypes:
+            - uuid: f80b6ab8463243b8908ab747cb86e39b
+              name: 'HARICA сертификат {#HARICA.DOMAIN} срок действия'
+              type: DEPENDENT
+              key: 'validity[{#HARICA.DOMAIN}]'
+              trends: '0'
+              units: days
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$..[?(@.domain== ''{#HARICA.DOMAIN}'')].daysLeft'
+                - type: LTRIM
+                  parameters:
+                    - '["'
+                - type: RTRIM
+                  parameters:
+                    - '"]'
+              master_item:
+                key: 'HaricaSSL.sh[{$HARICA.SCRIPT_PARAMS}]'
+              tags:
+                - tag: SSL
+                  value: SSL
+              trigger_prototypes:
+                - uuid: 52d01470df3a4a42b6b4bf00d6483f49
+                  expression: 'last(/HARICA SSL certs/validity[{#HARICA.DOMAIN}])<7'
+                  name: 'HARICA сертификат {#HARICA.DOMAIN} истекает менее чем через 7 дней'
+                  priority: HIGH
+                  description: |
+                    Менее 7 дней осталось до истечения срока действия сертификата.
+                  tags:
+                    - tag: SSL
+                      value: SSL
+                - uuid: b11fa7f454f64020982b844d4a68fee7
+                  expression: 'last(/HARICA SSL certs/validity[{#HARICA.DOMAIN}])<30'
+                  name: 'HARICA сертификат {#HARICA.DOMAIN} истекает менее чем через 30 дней'
+                  priority: AVERAGE
+                  description: |
+                    Менее 30 дней осталось до истечения срока действия сертификата.
+                  dependencies:
+                    - name: 'HARICA сертификат {#HARICA.DOMAIN} истекает менее чем через 7 дней'
+                      expression: 'last(/HARICA SSL certs/validity[{#HARICA.DOMAIN}])<7'
+                  tags:
+                    - tag: SSL
+                      value: SSL
+          master_item:
+            key: 'HaricaSSL.sh[{$HARICA.SCRIPT_PARAMS}]'
+          lld_macro_paths:
+            - lld_macro: '{#HARICA.DOMAIN}'
+              path: $.domain
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - 'return JSON.stringify(JSON.parse(value),[''domain'']);'
