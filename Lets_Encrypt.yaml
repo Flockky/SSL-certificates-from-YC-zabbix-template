@@ -1,0 +1,128 @@
+zabbix_export:
+  version: '7.4'
+  template_groups:
+    - uuid: af671f01cd9c4e93a804cfff6638e904
+      name: SSL
+    - uuid: af36653e02304d2e8e3900010d9d20c2
+      name: 'Наши шаблоны'
+  templates:
+    - uuid: bc4ff9555adb46e78d9cefd9964abe21
+      template: 'Lets Encrypt SSL certs'
+      name: 'Lets Encrypt SSL Сертификаты'
+      description: |
+        Шаблон мониторинга сертификатов Let's Encrypt.
+        
+        Принцип работы:
+        1. Через system.run выполняется скрипт, который возвращает JSON со списком сертификатов.
+        2. Данные обрабатываются через низкоуровневое обнаружение (LLD).
+        3. Создаются элементы данных для отслеживания срока действия каждого сертификата.
+        4. Триггеры срабатывают при остатке срока 30 и 14 дней.
+      groups:
+        - name: SSL
+        - name: 'Наши шаблоны'
+      macros:
+        - macro: '{$LE.CERTS.SCRIPT_PATH}'
+          value: ''
+          description: 'Путь к скрипту проверки сертификатов Let''s Encrypt (возвращает JSON)'
+      items:
+        - uuid: f98e08a934134a1cb6f8b0a8883e84dc
+          name: 'Lets Encrypt сертификаты get data'
+          key: 'system.run[cat {$LE.CERTS.SCRIPT_PATH}]'
+          delay: '0;5m/1-7,09:00-09:05'
+          value_type: TEXT
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - 'return JSON.stringify(JSON.parse(value).certificates);'
+            - type: CHECK_JSON_ERROR
+              parameters:
+                - $.name
+              error_handler: CUSTOM_VALUE
+              error_handler_params: 'no data'
+          tags:
+            - tag: SSL
+              value: SSL
+          triggers:
+            - uuid: 83b8126fecbc426ba18b4c5b0785dde8
+              expression: 'last(/Lets Encrypt SSL certs/system.run[cat {$LE.CERTS.SCRIPT_PATH}]) = "no data"'
+              name: 'Не удалось получить данные по Let''s Encrypt сертификатам'
+              opdata: 'Current value: {ITEM.LASTVALUE1}'
+              priority: WARNING
+              description: 'Действия ДС не требуются'
+      discovery_rules:
+        - uuid: 5c148c8b52bb4d5e8110d43a64393d40
+          name: 'SSL Lets Encrypt discovery'
+          type: DEPENDENT
+          key: SSL_Lets_Encrypt_discovery
+          item_prototypes:
+            - uuid: 7bb1a55f7e1848c7a0be2618c048abb4
+              name: 'Lets Encrypt сертификат {#LETSENC.NAME} срок действия'
+              type: DEPENDENT
+              key: 'validity[{#LETSENC.NAME}]'
+              history: 365d
+              value_type: CHAR
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$..[?(@.name == ''{#LETSENC.NAME}'')].validity'
+                - type: LTRIM
+                  parameters:
+                    - '["'
+                - type: RTRIM
+                  parameters:
+                    - '"]'
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      // Входное значение передаётся в переменную 'value'
+                      var match = value.match(/^(\d+)\s*day.*/i);
+                      
+                      if (match) {
+                          // Если совпадение найдено — возвращаем число (например, "60")
+                          return match[1];
+                      } else {
+                          // Если нет — возвращаем исходное значение (например, "INEXPIRED")
+                          return value;
+                      }
+              master_item:
+                key: 'system.run[cat {$LE.CERTS.SCRIPT_PATH}]'
+              tags:
+                - tag: SSL
+                  value: SSL
+              trigger_prototypes:
+                - uuid: 4755c2c016904e1ea48f3aa980c02a01
+                  expression: 'last(/Lets Encrypt SSL certs/validity[{#LETSENC.NAME}])<14'
+                  name: 'Lets Encrypt сертификат {#LETSENC.NAME} на доменах {#LETSENC.DOMAINS} истекает через {#LETSENC.VALIDITY}'
+                  priority: HIGH
+                  description: |
+                    Менее 14 дней осталось до истечения срока действия сертификата. 
+                    Данные из Let's Encrypt
+                  tags:
+                    - tag: SSL
+                      value: SSL
+                    - tag: target
+                      value: SSL
+                - uuid: 109210eda8554a2a983a620e96702741
+                  expression: 'last(/Lets Encrypt SSL certs/validity[{#LETSENC.NAME}])<30'
+                  name: 'Lets Encrypt сертификат {#LETSENC.NAME} на доменах {#LETSENC.DOMAINS} истекает через {#LETSENC.VALIDITY}'
+                  priority: AVERAGE
+                  description: |
+                    Менее 30 дней осталось до истечения срока действия сертификата. 
+                    Данные из Let's Encrypt
+                  dependencies:
+                    - name: 'Lets Encrypt сертификат {#LETSENC.NAME} на доменах {#LETSENC.DOMAINS} истекает через {#LETSENC.VALIDITY}'
+                      expression: 'last(/Lets Encrypt SSL certs/validity[{#LETSENC.NAME}])<14'
+                  tags:
+                    - tag: SSL
+                      value: SSL
+                    - tag: target
+                      value: SSL
+          master_item:
+            key: 'system.run[cat {$LE.CERTS.SCRIPT_PATH}]'
+          lld_macro_paths:
+            - lld_macro: '{#LETSENC.DOMAINS}'
+              path: $.domains
+            - lld_macro: '{#LETSENC.NAME}'
+              path: $.name
+            - lld_macro: '{#LETSENC.VALIDITY}'
+              path: $.validity
