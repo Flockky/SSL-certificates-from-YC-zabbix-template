@@ -1,0 +1,1 @@
+# SSL-certificates-from-YC-zabbix-template
