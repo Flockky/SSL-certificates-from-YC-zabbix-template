@@ -1,0 +1,129 @@
+zabbix_export:
+  version: '7.4'
+  template_groups:
+    - uuid: 7df96b18c230490a9a0a9e2307226338
+      name: Templates
+    - uuid: af36653e02304d2e8e3900010d9d20c2
+      name: 'Наши шаблоны'
+  templates:
+    - uuid: b6fe2c583d4446e4a5d233d959640db0
+      template: 'PKI2 SSL certs'
+      name: 'PKI2 SSL Сертификаты'
+      description: |
+        Шаблон мониторинга сертификатов центра сертификации PKI2.
+        
+        Принцип работы:
+        1. Через HTTP-агент загружается JSON-файл со списком истекающих сертификатов.
+        2. Данные обрабатываются через низкоуровневое обнаружение (LLD).
+        3. Создаются элементы данных для отслеживания срока действия каждого сертификата.
+        4. Триггеры срабатывают при остатке срока 30 и 7 дней.
+      groups:
+        - name: Templates
+        - name: 'Наши шаблоны'
+      macros:
+        - macro: '{$PKI2.JSON.URL}'
+          value: ''
+          description: 'URL для получения JSON с истекающими сертификатами (настраивается на хосте)'
+      items:
+        - uuid: 8353f63777864a2c8e22bc9031b8e7f8
+          name: 'PKI сертификаты get data'
+          type: HTTP_AGENT
+          key: pki2.certs.get.data
+          delay: 0;h11m10
+          history: 90d
+          value_type: TEXT
+          description: 'Забираем выгруженный JSON с истекающими в ближайшие 2 месяца сертификатами. Выгрузка данных организована на стороне узла.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.*'
+              error_handler: CUSTOM_VALUE
+              error_handler_params: 'no data'
+          url: '{$PKI2.JSON.URL}'
+          tags:
+            - tag: Application
+              value: JSON
+            - tag: target
+              value: SSL
+          triggers:
+            - uuid: bb0e1a4bd5af427296ee9296e701af4f
+              expression: 'last(/PKI2 SSL certs/pki2.certs.get.data) = "no data"'
+              name: 'Не удалось получить данные по PKI2 сертификатам'
+              opdata: 'Current value: {ITEM.LASTVALUE1}'
+              priority: WARNING
+              description: 'Действия ДС не требуются'
+      discovery_rules:
+        - uuid: 5af15b3d0752484e81e120cad7dd0d0e
+          name: 'SSL cert list'
+          type: DEPENDENT
+          key: ssl.host
+          lifetime: 30d
+          enabled_lifetime_type: DISABLE_NEVER
+          item_prototypes:
+            - uuid: bb4134b62aee46838fce74c2c702fa99
+              name: 'Expire day SSL cert {#CN} on {#DNS}'
+              type: DEPENDENT
+              key: 'ssl.pki[{#CN}_{#HASH}]'
+              history: 90d
+              description: 'The data item collects the remaining number of days until the SSL certificate found on the host expires.'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.Short_hash==''{#HASH}'')].Dead_Line'
+                - type: TRIM
+                  parameters:
+                    - '[]'
+              master_item:
+                key: pki2.certs.get.data
+              tags:
+                - tag: target
+                  value: SSL
+              trigger_prototypes:
+                - uuid: bcf276edd66a4b09ad910b812d30d2c4
+                  expression: 'last(/PKI2 SSL certs/ssl.pki[{#CN}_{#HASH}])<7'
+                  name: 'Сертификат {#CN}. Ticket SD {#TICKET} на {#DNS} истекает менее чем через 7 дней'
+                  event_name: 'Осталось менее 7 дней действия сертификата {#CN}, тикет SD {#TICKET} применяемого на хостах: {#DNS}. Хэш: {#THUMBNAIL}'
+                  priority: HIGH
+                  description: |
+                    Через 7 дней истечет сертификат.
+                    Данные из внутреннего центра сертификации PKI2
+                    
+                    Действия ДС:
+                    Продублировать информацию в чат "СБС Инциденты"
+                  tags:
+                    - tag: target
+                      value: SSL
+                - uuid: 85eb25c106854edea8be31fa7a4bb245
+                  expression: 'last(/PKI2 SSL certs/ssl.pki[{#CN}_{#HASH}])<30'
+                  name: 'Сертификат {#CN}. Ticket SD {#TICKET} на {#DNS} истекает менее чем через 30 дней'
+                  event_name: 'Осталось менее 30 дней действия сертификата {#CN}, тикет SD {#TICKET} применяемого на хостах: {#DNS}. Хэш: {#THUMBNAIL}'
+                  priority: AVERAGE
+                  description: |
+                    Менее 30 дней осталось до истечения срока действия сертификата. 
+                    Данные из внутреннего центра сертификации PKI2
+                    
+                    Действия ДС:
+                    1. Оповестить ответственных
+                    2. Продублировать информацию в чат "СБС Инциденты"
+                  dependencies:
+                    - name: 'Сертификат {#CN}. Ticket SD {#TICKET} на {#DNS} истекает менее чем через 7 дней'
+                      expression: 'last(/PKI2 SSL certs/ssl.pki[{#CN}_{#HASH}])<7'
+                  tags:
+                    - tag: target
+                      value: SSL
+          master_item:
+            key: pki2.certs.get.data
+          lld_macro_paths:
+            - lld_macro: '{#CN}'
+              path: $.Cert_name
+            - lld_macro: '{#DNS}'
+              path: $.DNS_name
+            - lld_macro: '{#HASH}'
+              path: $.Short_hash
+            - lld_macro: '{#THUMBNAIL}'
+              path: $.Hash
+            - lld_macro: '{#TICKET}'
+              path: $.Ticket
+      tags:
+        - tag: target
+          value: 'SSL Collector'
