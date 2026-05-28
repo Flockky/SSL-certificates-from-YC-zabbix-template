@@ -1,0 +1,185 @@
+zabbix_export:
+  version: '7.4'
+  template_groups:
+    - uuid: af671f01cd9c4e93a804cfff6638e904
+      name: SSL
+    - uuid: af36653e02304d2e8e3900010d9d20c2
+      name: 'Наши шаблоны'
+  templates:
+    - uuid: 813e753ba6bb4320b8bbad3c91bfd0aa
+      template: 'International SSL certs'
+      name: 'Международные SSL Сертификаты'
+      description: |
+        Шаблон мониторинга международных SSL сертификатов (например, через Reg.ru API).
+        
+        Принцип работы:
+        1. Через HTTP-агент отправляется POST-запрос к API регистратора.
+        2. Полученный JSON обрабатывается JavaScript-препроцессором для расчета дней до истечения срока.
+        3. Данные обрабатываются через низкоуровневое обнаружение (LLD).
+        4. Триггеры срабатывают при остатке срока 30 и 7 дней.
+      groups:
+        - name: SSL
+        - name: 'Наши шаблоны'
+      macros:
+        - macro: '{$REGRU.PASSWORD}'
+          type: SECRET_TEXT
+          description: 'Пароль для API регистратора'
+        - macro: '{$REGRU.USERNAME}'
+          value: ''
+          description: 'Логин для API регистратора'
+      items:
+        - uuid: 2a06dd134d9c485f86f69ee687d3296d
+          name: 'Международные сертификаты get data'
+          type: HTTP_AGENT
+          key: International.certs.get.data
+          delay: '0;5m/1-7,09:00-09:05'
+          value_type: TEXT
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.answer.services
+              error_handler: CUSTOM_VALUE
+              error_handler_params: 'no data'
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  // Получаем входящее значение
+                  var value = value;
+                  
+                  // Проверяем, что значение — строка
+                  if (typeof value === 'string') {
+                      var trimmed = value.trim();
+                  
+                      // Пытаемся распарсить JSON
+                      try {
+                          var data = JSON.parse(trimmed);
+                  
+                          // Проверяем, что это массив
+                          if (Array.isArray(data)) {
+                              var now = Date.now(); // текущее время в миллисекундах
+                  
+                              data.forEach(function(item) {
+                                  // Проверяем, что элемент — объект
+                                  if (item && typeof item === 'object') {
+                                      // Обработка expiration_date для подсчёта expiration_days
+                                      if (typeof item.expiration_date === 'string') {
+                                          var expStr = item.expiration_date.trim();
+                                          if (/^\d{4}-\d{2}-\d{2}$/.test(expStr)) {
+                                              var expDate = new Date(expStr);
+                                              var expTime = expDate.getTime();
+                                              if (!isNaN(expTime)) {
+                                                  var diffMs = expTime - now;
+                                                  var diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+                                                  item.expiration_days = diffDays;
+                                              }
+                                          }
+                                      }
+                                  }
+                              });
+                  
+                              // Возвращаем модифицированный JSON с добавленным expiration_days
+                              return JSON.stringify(data);
+                          }
+                      } catch (e) {
+                          // Ошибка парсинга или обработки — подавляем
+                      }
+                  }
+                  
+                  // Если значение не подходит — возвращаем 0
+                  return 0;
+          url: 'https://api.reg.ru/api/regru2/service/get_list'
+          posts: 'username={$REGRU.USERNAME}&password={$REGRU.PASSWORD}&output_format=json'
+          headers:
+            - name: Content-Type
+              value: application/x-www-form-urlencoded
+          request_method: POST
+          tags:
+            - tag: SSL
+              value: SSL
+          triggers:
+            - uuid: 29d1962f2e4141a59153b7d5a3c94d90
+              expression: 'last(/International SSL certs/International.certs.get.data) = "no data"'
+              name: 'Не удалось получить данные по международным сертификатам'
+              opdata: 'Current value: {ITEM.LASTVALUE1}'
+              priority: WARNING
+              description: 'Действия ДС не требуются'
+      discovery_rules:
+        - uuid: f1730d2c309c4eddbcc8dac2c03cb027
+          name: 'SSL International discovery'
+          type: DEPENDENT
+          key: SSL_International_discovery
+          item_prototypes:
+            - uuid: 228a57d3b2bd4e13a3ae50ff4327bbfc
+              name: 'Международный сертификат {#INTERNATIONAL.DNAME} с типом {#INTERNATIONAL.SERVTYPE} ID'
+              type: DEPENDENT
+              key: 'ID[{#INTERNATIONAL.DNAME}.{#INTERNATIONAL.SERVTYPE}]'
+              value_type: FLOAT
+              trends: '0'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.[?(@.dname == ''{#INTERNATIONAL.DNAME}'' && @.servtype == ''{#INTERNATIONAL.SERVTYPE}'')].service_id'
+                - type: LTRIM
+                  parameters:
+                    - '["'
+                - type: RTRIM
+                  parameters:
+                    - '"]'
+              master_item:
+                key: International.certs.get.data
+              tags:
+                - tag: SSL
+                  value: SSL
+            - uuid: bda7adedc44846fea99aab6744f648ae
+              name: 'Международный сертификат {#INTERNATIONAL.DNAME} с типом {#INTERNATIONAL.SERVTYPE} срок действия'
+              type: DEPENDENT
+              key: 'validity[{#INTERNATIONAL.DNAME}.{#INTERNATIONAL.SERVTYPE}]'
+              value_type: FLOAT
+              trends: '0'
+              units: days
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.[?(@.dname == ''{#INTERNATIONAL.DNAME}'' && @.servtype == ''{#INTERNATIONAL.SERVTYPE}'')].expiration_days'
+                - type: LTRIM
+                  parameters:
+                    - '["'
+                - type: RTRIM
+                  parameters:
+                    - '"]'
+              master_item:
+                key: International.certs.get.data
+              tags:
+                - tag: SSL
+                  value: SSL
+              trigger_prototypes:
+                - uuid: f30a615e5cd74144848e182c0973e284
+                  expression: 'last(/International SSL certs/validity[{#INTERNATIONAL.DNAME}.{#INTERNATIONAL.SERVTYPE}])<7'
+                  name: 'Международный сертификат {#INTERNATIONAL.DNAME} с типом {#INTERNATIONAL.SERVTYPE} истекает через 7 дней'
+                  priority: HIGH
+                  description: |
+                    Менее 7 дней осталось до истечения срока действия Международного сертификата.
+                  tags:
+                    - tag: SSL
+                      value: SSL
+                - uuid: c3aaf1795500469abb1b2139f38e7b00
+                  expression: 'last(/International SSL certs/validity[{#INTERNATIONAL.DNAME}.{#INTERNATIONAL.SERVTYPE}])<30'
+                  name: 'Международный сертификат {#INTERNATIONAL.DNAME} с типом {#INTERNATIONAL.SERVTYPE} истекает через 30 дней'
+                  priority: AVERAGE
+                  description: |
+                    Менее 30 дней осталось до истечения срока действия Международного сертификата.
+                  dependencies:
+                    - name: 'Международный сертификат {#INTERNATIONAL.DNAME} с типом {#INTERNATIONAL.SERVTYPE} истекает через 7 дней'
+                      expression: 'last(/International SSL certs/validity[{#INTERNATIONAL.DNAME}.{#INTERNATIONAL.SERVTYPE}])<7'
+                  tags:
+                    - tag: SSL
+                      value: SSL
+          master_item:
+            key: International.certs.get.data
+          lld_macro_paths:
+            - lld_macro: '{#INTERNATIONAL.DNAME}'
+              path: $.dname
+            - lld_macro: '{#INTERNATIONAL.SERVTYPE}'
+              path: $.servtype
+            - lld_macro: '{#INTERNATIONAL.SUBTYPE}'
+              path: $.subtype
